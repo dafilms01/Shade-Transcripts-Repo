@@ -1,0 +1,6 @@
+streamlit
+anthropic
+google-api-python-client
+google-auth
+notion-client
+requests
