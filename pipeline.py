@@ -83,7 +83,7 @@ Return ONLY valid JSON — no prose, no markdown code fences — as an object:
 # --- Shade API -------------------------------------------------------------
 
 def shade_headers(api_key):
-    return {"Authorization": f"Bearer {api_key}", "accept": "application/json"}
+    return {"Authorization": api_key, "accept": "application/json"}
 
 
 def shade_list_files(api_key, folder_path, recursive=True):
