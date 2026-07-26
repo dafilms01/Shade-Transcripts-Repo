@@ -131,6 +131,7 @@ def tag_utterances(claude, utterances):
     with claude.messages.stream(
         model=CLAUDE_MODEL,
         max_tokens=32000,
+        effort="low",
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(utterances)}],
     ) as stream:
