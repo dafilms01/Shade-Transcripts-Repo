@@ -1,5 +1,6 @@
 import streamlit as st
 import anthropic
+from urllib.parse import unquote
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from notion_client import Client as NotionClient
@@ -51,7 +52,7 @@ def get_clients():
 
 
 if st.button("▶ Run Intake", type="primary"):
-    folder_paths = [p.strip() for p in folder_paths_raw.splitlines() if p.strip()]
+    folder_paths = [unquote(p.strip()) for p in folder_paths_raw.splitlines() if p.strip()]
     if not folder_paths:
         st.warning("Paste at least one Shade folder path first.")
         st.stop()
