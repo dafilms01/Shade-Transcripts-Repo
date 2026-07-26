@@ -188,6 +188,37 @@ def update_transcript_link(notion, interview_page_id, doc_url):
 
 # --- Google Doc generation ---------------------------------------------------
 
+def format_utterance(u, sentences_per_marker=3):
+    """Render one utterance with a timecode every N sentences (using
+    word-level timestamps) — frequent enough that long speaker turns
+    aren't left with only one reference point, but not so frequent that
+    it clutters the read."""
+    words = u.get("words") or []
+    if not words:
+        return f"<p><b>Speaker {u['speaker']}</b><br/>[{ms_to_timecode(u['start'])}] {u['text']}</p>"
+
+    sentences = []
+    current_words = []
+    current_start = words[0]["start"]
+    for w in words:
+        if not current_words:
+            current_start = w["start"]
+        current_words.append(w["text"])
+        if w["text"].rstrip().endswith((".", "?", "!")):
+            sentences.append((current_start, " ".join(current_words)))
+            current_words = []
+    if current_words:
+        sentences.append((current_start, " ".join(current_words)))
+
+    chunks = []
+    for i in range(0, len(sentences), sentences_per_marker):
+        group = sentences[i:i + sentences_per_marker]
+        chunks.append((group[0][0], " ".join(s[1] for s in group)))
+
+    body = " ".join(f"[{ms_to_timecode(start)}] {text}" for start, text in chunks)
+    return f"<p><b>Speaker {u['speaker']}</b><br/>{body}</p>"
+
+
 def build_doc_html(subject, selects, utterances):
     rows = []
     for s in selects:
@@ -216,10 +247,7 @@ def build_doc_html(subject, selects, utterances):
         before referencing this footage.</p>
         """
 
-    transcript_rows = "".join(
-        f"<p><b>Speaker {u['speaker']}</b> [{ms_to_timecode(u['start'])}]<br/>{u['text']}</p>"
-        for u in utterances
-    )
+    transcript_rows = "".join(format_utterance(u) for u in utterances)
 
     return f"""<html><body>
 <h1>{subject}</h1>
