@@ -127,21 +127,24 @@ def ms_to_timecode(ms):
 
 
 def tag_utterances(claude, utterances):
-    message = claude.messages.create(
+    full_text = ""
+    with claude.messages.stream(
         model=CLAUDE_MODEL,
         max_tokens=32000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(utterances)}],
-    )
-    text_blocks = [block.text for block in message.content if block.type == "text"]
-    if not text_blocks:
+    ) as stream:
+        for chunk in stream.text_stream:
+            full_text += chunk
+        stop_reason = stream.get_final_message().stop_reason
+
+    if not full_text.strip():
         raise ValueError(
-            f"Claude returned no text content (stop_reason={message.stop_reason}). "
+            f"Claude returned no text content (stop_reason={stop_reason}). "
             "This usually means the response was cut off before finishing — "
             "try raising max_tokens further, or splitting very long interviews."
         )
-    raw = text_blocks[0].strip()
-    raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
+    raw = re.sub(r"^```(json)?|```$", "", full_text.strip(), flags=re.MULTILINE).strip()
     return json.loads(raw)
 
 
