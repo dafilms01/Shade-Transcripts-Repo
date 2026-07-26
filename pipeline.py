@@ -133,7 +133,7 @@ def tag_utterances(claude, utterances):
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(utterances)}],
     )
-    raw = message.content[0].text.strip()
+    raw = next(block.text for block in message.content if block.type == "text").strip()
     raw = re.sub(r"^```(json)?|```$", "", raw, flags=re.MULTILINE).strip()
     return json.loads(raw)
 
