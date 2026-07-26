@@ -133,7 +133,7 @@ def tag_utterances(claude, utterances):
         max_tokens=32000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": json.dumps(utterances)}],
-        extra_body={"effort": "low"},
+        extra_body={"output_config": {"effort": "low"}},
     ) as stream:
         for chunk in stream.text_stream:
             full_text += chunk
