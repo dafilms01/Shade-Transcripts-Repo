@@ -23,6 +23,7 @@ from notion_client import Client as NotionClient
 # --- Fixed workspace IDs ---------------------------------------------------
 
 INTERVIEWS_DB_ID = "9f722960ac654e19abe921a6a8480a24"
+INTERVIEWS_DATA_SOURCE_ID = "31cf1c34-9079-4f9b-814b-cefdc8b9bcd9"
 SELECTS_DB_ID = "08ed992eddbb496ca2557de69f36de0f"
 SELECTS_DB_URL = "https://app.notion.com/p/08ed992eddbb496ca2557de69f36de0f"
 COMPLETED_DOCS_FOLDER_ID = "11fqzrLXi5iwur_eOvSv8kMK6P3bAiEgs"
@@ -154,8 +155,8 @@ def tag_utterances(claude, utterances):
 def find_existing_interview(notion, asset_id):
     """Return the page_id of an existing Interview row for this Shade
     asset, if one was already created in a previous run — otherwise None."""
-    resp = notion.databases.query(
-        database_id=INTERVIEWS_DB_ID,
+    resp = notion.data_sources.query(
+        data_source_id=INTERVIEWS_DATA_SOURCE_ID,
         filter={"property": "Shade Asset ID", "rich_text": {"equals": asset_id}},
     )
     results = resp.get("results", [])
