@@ -151,12 +151,24 @@ def tag_utterances(claude, utterances):
 
 # --- Notion writes -----------------------------------------------------------
 
-def create_interview_page(notion, subject, project, shade_source_link=None):
+def find_existing_interview(notion, asset_id):
+    """Return the page_id of an existing Interview row for this Shade
+    asset, if one was already created in a previous run — otherwise None."""
+    resp = notion.databases.query(
+        database_id=INTERVIEWS_DB_ID,
+        filter={"property": "Shade Asset ID", "rich_text": {"equals": asset_id}},
+    )
+    results = resp.get("results", [])
+    return results[0]["id"] if results else None
+
+
+def create_interview_page(notion, subject, project, asset_id, shade_source_link=None):
     props = {
         "Subject / Speaker": {"title": [{"text": {"content": subject}}]},
         "Project": {"select": {"name": project}},
         "Interview Date": {"date": {"start": datetime.now(timezone.utc).date().isoformat()}},
         "Status": {"select": {"name": "Tagged"}},
+        "Shade Asset ID": {"rich_text": [{"text": {"content": asset_id}}]},
     }
     if shade_source_link:
         props["Shade Source Link"] = {"url": shade_source_link}
@@ -290,23 +302,23 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
         asset_id = video["id"]
         name = video.get("name", asset_id)
         try:
+            existing = find_existing_interview(notion, asset_id)
+            if existing:
+                log(f"  \u23ed {name}: already processed previously, skipping")
+                continue
+
             log(f"Fetching transcript for {name}...")
             utterances = shade_get_utterances(shade_api_key, asset_id)
             if not utterances:
                 log(f"  \u23ed {name}: no transcript available, skipping")
                 continue
 
-            with_words = sum(1 for u in utterances if u.get("words"))
-            log(f"  \U0001f50d DIAGNOSTIC: {len(utterances)} utterances, {with_words} have word-level timestamps")
-
             tagged = tag_utterances(claude, utterances)
             subject = tagged.get("subject_name") or name
             selects = tagged["selects"]
 
-            interview_id = create_interview_page(notion, subject, project)
+            interview_id = create_interview_page(notion, subject, project, asset_id)
             create_select_rows(notion, interview_id, selects)
-
-            log(f"  \U0001f50d DIAGNOSTIC: passing source_filename={name!r} into build_doc_html")
 
             html = build_doc_html(subject, selects, utterances, source_filename=name)
             doc_url = create_combined_doc(drive, subject, project, html)
