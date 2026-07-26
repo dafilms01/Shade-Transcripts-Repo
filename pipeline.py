@@ -219,7 +219,7 @@ def format_utterance(u, sentences_per_marker=3):
     return f"<p><b>Speaker {u['speaker']}</b><br/>{body}</p>"
 
 
-def build_doc_html(subject, selects, utterances):
+def build_doc_html(subject, selects, utterances, source_filename=None):
     rows = []
     for s in selects:
         if s.get("flag") and s["flag"] != "None":
@@ -249,8 +249,11 @@ def build_doc_html(subject, selects, utterances):
 
     transcript_rows = "".join(format_utterance(u) for u in utterances)
 
+    source_line = f"<p><i>Source file: {source_filename}</i></p>" if source_filename else ""
+
     return f"""<html><body>
 <h1>{subject}</h1>
+{source_line}
 <p><a href="{SELECTS_DB_URL}">\u2192 Browse all tagged soundbites across every interview in Notion</a></p>
 <p><i>Selects below are generated automatically. Full transcript follows for reference \u2014 scroll down.</i></p>
 <h2>Selects</h2>
@@ -300,7 +303,7 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
             interview_id = create_interview_page(notion, subject, project)
             create_select_rows(notion, interview_id, selects)
 
-            html = build_doc_html(subject, selects, utterances)
+            html = build_doc_html(subject, selects, utterances, source_filename=name)
             doc_url = create_combined_doc(drive, subject, project, html)
             update_transcript_link(notion, interview_id, doc_url)
 
