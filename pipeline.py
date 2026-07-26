@@ -25,7 +25,7 @@ from notion_client import Client as NotionClient
 INTERVIEWS_DB_ID = "9f722960ac654e19abe921a6a8480a24"
 SELECTS_DB_ID = "08ed992eddbb496ca2557de69f36de0f"
 SELECTS_DB_URL = "https://app.notion.com/p/08ed992eddbb496ca2557de69f36de0f"
-COMPLETED_DOCS_FOLDER_ID = "1RiKVAbxUYjJkjqsg0rJh7LuaSWljQmZw"
+COMPLETED_DOCS_FOLDER_ID = "11fqzrLXi5iwur_eOvSv8kMK6P3bAiEgs"
 
 SHADE_DRIVE_ID = "4ac63729-7c15-4a5b-b954-4edfd4700643"  # Buoyant workspace — fixed
 SHADE_API_BASE = "https://api.shade.inc"
@@ -244,7 +244,9 @@ def create_combined_doc(drive, subject, project, html_content):
         "parents": [COMPLETED_DOCS_FOLDER_ID],
     }
     media = MediaIoBaseUpload(io.BytesIO(html_content.encode("utf-8")), mimetype="text/html")
-    doc = drive.files().create(body=file_metadata, media_body=media, fields="id, webViewLink").execute()
+    doc = drive.files().create(
+        body=file_metadata, media_body=media, fields="id, webViewLink", supportsAllDrives=True
+    ).execute()
     return doc["webViewLink"]
 
 
