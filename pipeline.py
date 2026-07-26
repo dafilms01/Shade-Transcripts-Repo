@@ -296,12 +296,17 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
                 log(f"  \u23ed {name}: no transcript available, skipping")
                 continue
 
+            with_words = sum(1 for u in utterances if u.get("words"))
+            log(f"  \U0001f50d DIAGNOSTIC: {len(utterances)} utterances, {with_words} have word-level timestamps")
+
             tagged = tag_utterances(claude, utterances)
-            subject = tagged["subject_name"]
+            subject = tagged.get("subject_name") or name
             selects = tagged["selects"]
 
             interview_id = create_interview_page(notion, subject, project)
             create_select_rows(notion, interview_id, selects)
+
+            log(f"  \U0001f50d DIAGNOSTIC: passing source_filename={name!r} into build_doc_html")
 
             html = build_doc_html(subject, selects, utterances, source_filename=name)
             doc_url = create_combined_doc(drive, subject, project, html)
