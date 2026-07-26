@@ -1,6 +1,7 @@
+from urllib.parse import unquote
+
 import streamlit as st
 import anthropic
-from urllib.parse import unquote
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from notion_client import Client as NotionClient
@@ -38,6 +39,19 @@ folder_paths_raw = st.text_area(
 recursive = st.checkbox("Include subfolders", value=True)
 
 
+def clean_path(raw):
+    """Repeatedly decode URL-encoding until stable, so pasted paths work
+    whether they're plain, single-encoded, or double-encoded (e.g. a
+    browser-copied path that got encoded again by another app)."""
+    path = raw.strip()
+    for _ in range(3):
+        decoded = unquote(path)
+        if decoded == path:
+            break
+        path = decoded
+    return path
+
+
 @st.cache_resource
 def get_clients():
     creds = service_account.Credentials.from_service_account_info(
@@ -52,7 +66,7 @@ def get_clients():
 
 
 if st.button("▶ Run Intake", type="primary"):
-    folder_paths = [unquote(p.strip()) for p in folder_paths_raw.splitlines() if p.strip()]
+    folder_paths = [clean_path(p) for p in folder_paths_raw.splitlines() if p.strip()]
     if not folder_paths:
         st.warning("Paste at least one Shade folder path first.")
         st.stop()

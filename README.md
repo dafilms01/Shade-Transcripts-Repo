@@ -10,10 +10,8 @@ interview.
 
 ### 1. Shade API key
 Generate an API key in Shade's account/workspace settings (Admin →
-API Keys, or similar). This is `shade_api_key`. The app sends it as
-`Authorization: Bearer <key>` — if Shade rejects that, check the code
-sample Shade shows next to the key and adjust `shade_headers()` in
-`pipeline.py` accordingly (it's a one-line change).
+API Keys, or similar). This is `shade_api_key`. Confirmed working format:
+sent as the raw key in the `Authorization` header (no `Bearer` prefix).
 
 ### 2. Notion integration
 1. Go to notion.so/my-integrations → **New integration**. Name it
@@ -70,8 +68,6 @@ double check it in Notion afterward in case an unusual interview trips
 this up.
 
 ## Known open items
-- **Shade auth header**: confirm the app's `Authorization: Bearer`
-  format is actually what Shade's API key expects on the first real run.
 - **Shade Source Link**: not auto-populated yet in Notion — would need a
   known mapping from workspace/project slug to build the
   `app.shade.inc/buoyant/a/{project}/{asset_id}` URL. Can be added once
