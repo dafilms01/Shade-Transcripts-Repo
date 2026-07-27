@@ -167,7 +167,7 @@ def create_interview_page(notion, subject, project, asset_id, shade_source_link=
     props = {
         "Subject / Speaker": {"title": [{"text": {"content": subject}}]},
         "Project": {"select": {"name": project}},
-        "Interview Date": {"date": {"start": datetime.now(timezone.utc).date().isoformat()}},
+        "Date Generated": {"date": {"start": datetime.now(timezone.utc).date().isoformat()}},
         "Status": {"select": {"name": "Tagged"}},
         "Shade Asset ID": {"rich_text": [{"text": {"content": asset_id}}]},
     }
