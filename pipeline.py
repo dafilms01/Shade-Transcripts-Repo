@@ -6,30 +6,27 @@ Given one or more Shade folder paths, this:
 2. Pulls precise, speaker-labeled transcripts via Shade's utterances endpoint.
 3. Tags flagged moments (topic, emotional weight, off-record/legal flags)
    with Claude, inferring the subject's name from the transcript itself.
-4. Writes an Interview + Selects rows into Notion.
-5. Generates a combined Google Doc (selects + full transcript) per interview.
+4. Posts a ranged comment on the clip in Shade for each select.
+5. Generates a combined Google Doc (clip link, selects linked to their
+   Shade comments, full transcript) per interview.
 """
 
 import io
 import json
 import re
-from datetime import datetime, timezone
 
 import anthropic
 import requests
 from googleapiclient.http import MediaIoBaseUpload
-from notion_client import Client as NotionClient
 
 # --- Fixed workspace IDs ---------------------------------------------------
 
-INTERVIEWS_DB_ID = "9f722960ac654e19abe921a6a8480a24"
-INTERVIEWS_DATA_SOURCE_ID = "31cf1c34-9079-4f9b-814b-cefdc8b9bcd9"
-SELECTS_DB_ID = "08ed992eddbb496ca2557de69f36de0f"
-SELECTS_DB_URL = "https://app.notion.com/p/08ed992eddbb496ca2557de69f36de0f"
 COMPLETED_DOCS_FOLDER_ID = "11fqzrLXi5iwur_eOvSv8kMK6P3bAiEgs"
 
 SHADE_DRIVE_ID = "4ac63729-7c15-4a5b-b954-4edfd4700643"  # Buoyant workspace — fixed
 SHADE_API_BASE = "https://api.shade.inc"
+SHADE_WEB_BASE = "https://app.shade.inc"
+DEFAULT_WORKSPACE = "buoyant"  # the workspace's web address; unchanged by the display-name rename
 
 CLAUDE_MODEL = "claude-sonnet-5"  # adjust if your API access differs
 
@@ -129,6 +126,25 @@ def shade_get_utterances(api_key, drive_id, asset_id):
     return normalize_utterances(resp.json())
 
 
+def apply_transcript_edits(base, edits):
+    """Swap in any corrections someone made to the transcript in Shade.
+    Edits are keyed by the utterance's position in the list."""
+    if not isinstance(edits, dict) or not edits:
+        return base
+    merged = list(base)
+    for key, edit in edits.items():
+        try:
+            i = int(key)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < len(merged) and isinstance(merged[i], dict):
+            if isinstance(edit, dict):
+                merged[i] = {**merged[i], **edit}
+            elif isinstance(edit, str):
+                merged[i] = {**merged[i], "text": edit, "words": []}
+    return merged
+
+
 def normalize_utterances(data):
     """Shade has returned transcripts both as a bare list of utterances and
     wrapped in an object (and sometimes as a JSON string). Accept all of
@@ -139,6 +155,9 @@ def normalize_utterances(data):
             return []
         data = json.loads(data)
     if isinstance(data, dict):
+        # Shade's documented shape: {"base_utterances": [...], "edits": {...}}
+        if isinstance(data.get("base_utterances"), list):
+            return normalize_utterances(apply_transcript_edits(data["base_utterances"], data.get("edits")))
         for key in ("utterances", "items", "data", "results", "transcript", "transcription"):
             if key in data:
                 return normalize_utterances(data[key])
@@ -197,64 +216,147 @@ def tag_utterances(claude, utterances):
     return json.loads(raw)
 
 
-# --- Notion writes -----------------------------------------------------------
+# --- Shade links and comments ------------------------------------------------
 
-def find_existing_interviews(notion, asset_id):
-    """Return any Interview rows already created for this Shade asset."""
-    resp = notion.data_sources.query(
-        data_source_id=INTERVIEWS_DATA_SOURCE_ID,
-        filter={"property": "Shade Asset ID", "rich_text": {"equals": asset_id}},
+_LINK_INFO_CACHE = {}
+
+
+def shade_drive_link_info(api_key, drive_id):
+    """Look up the workspace web name and drive label Shade uses in its web
+    links (e.g. "buoyant" and "COL"). Only needed when a plain folder path
+    was pasted instead of a browser link. Returns (None, None) if unknown."""
+    if drive_id in _LINK_INFO_CACHE:
+        return _LINK_INFO_CACHE[drive_id]
+    found = (None, None)
+    try:
+        ws_resp = requests.get(f"{SHADE_API_BASE}/workspaces", headers=shade_headers(api_key), timeout=30)
+        ws_resp.raise_for_status()
+        workspaces = ws_resp.json()
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("workspaces") or workspaces.get("items") or []
+        for ws in workspaces:
+            d_resp = requests.get(
+                f"{SHADE_API_BASE}/workspaces/{ws['id']}/drives", headers=shade_headers(api_key), timeout=30
+            )
+            if not d_resp.ok:
+                continue
+            drives = d_resp.json()
+            if isinstance(drives, dict):
+                drives = drives.get("drives") or drives.get("items") or []
+            for d in drives:
+                if d.get("id") == drive_id and d.get("identifier"):
+                    found = (ws.get("domain") or DEFAULT_WORKSPACE, d["identifier"])
+                    break
+            if found[1]:
+                break
+    except Exception:
+        pass
+    _LINK_INFO_CACHE[drive_id] = found
+    return found
+
+
+def shade_clip_url(workspace, drive_label, asset_id):
+    if not (workspace and drive_label):
+        return None
+    return f"{SHADE_WEB_BASE}/{workspace}/a/{drive_label}/{asset_id}"
+
+
+def comment_text(s):
+    tags = ", ".join(s.get("topic_tags", []))
+    meta = " · ".join(x for x in (tags, s.get("emotional_weight")) if x)
+    quote = s["quote"] if len(s["quote"]) <= 600 else s["quote"][:597] + "..."
+    return f"SELECT: \"{quote}\"" + (f"\n{meta}" if meta else "")
+
+
+def shade_existing_comments(api_key, drive_id, asset_id):
+    """Map comment text -> comment ID for comments already on the clip, so a
+    re-run doesn't post the same select twice."""
+    resp = requests.get(
+        f"{SHADE_API_BASE}/assets/{asset_id}/comments",
+        headers=shade_headers(api_key),
+        params={"drive_id": drive_id},
+        timeout=30,
     )
-    return resp.get("results", [])
+    resp.raise_for_status()
+    data = resp.json()
+    if isinstance(data, dict):
+        data = data.get("comments") or data.get("items") or []
+    out = {}
+    for c in data if isinstance(data, list) else []:
+        if isinstance(c, dict):
+            text = c.get("comment") or c.get("text") or ""
+            if text:
+                out[text.strip()] = c.get("id")
+    return out
 
 
-def is_complete(page):
-    """An interview counts as done only once its Google Doc link was saved."""
-    return bool(page.get("properties", {}).get("Transcript Link", {}).get("url"))
-
-
-def archive_incomplete(notion, page):
-    """Remove a half-finished Interview row (and its Selects) left by a run
-    that crashed before the doc was made, so the clip can be redone cleanly."""
-    for rel in page.get("properties", {}).get("Selects", {}).get("relation", []):
-        notion.pages.update(page_id=rel["id"], archived=True)
-    notion.pages.update(page_id=page["id"], archived=True)
-
-
-def create_interview_page(notion, subject, project, asset_id, shade_source_link=None):
-    props = {
-        "Subject / Speaker": {"title": [{"text": {"content": subject}}]},
-        "Project": {"select": {"name": project}},
-        "Date Generated": {"date": {"start": datetime.now(timezone.utc).date().isoformat()}},
-        "Status": {"select": {"name": "Tagged"}},
-        "Shade Asset ID": {"rich_text": [{"text": {"content": asset_id}}]},
+def shade_add_comment(api_key, drive_id, asset_id, clip_url, text, start_ms, end_ms):
+    """Post a public comment covering the select's time range. Returns the
+    new comment's ID when Shade sends one back."""
+    body = {
+        "drive_id": drive_id,
+        "comment": text,
+        "timestamp": round(start_ms / 1000, 2),
+        "duration": round(max(end_ms - start_ms, 1000) / 1000, 2),
+        "url": f"{clip_url}?commentId=REPLACE_COMMENT_ID_ON_SERVER",
+        "is_public": True,
     }
-    if shade_source_link:
-        props["Shade Source Link"] = {"url": shade_source_link}
-    page = notion.pages.create(parent={"database_id": INTERVIEWS_DB_ID}, properties=props)
-    return page["id"]
+    resp = requests.post(
+        f"{SHADE_API_BASE}/assets/{asset_id}/comments",
+        headers={**shade_headers(api_key), "content-type": "application/json"},
+        json=body,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    try:
+        data = resp.json()
+    except ValueError:
+        return None
+    if isinstance(data, dict):
+        if data.get("id"):
+            return data["id"]
+        if isinstance(data.get("comment"), dict):
+            return data["comment"].get("id")
+    return None
 
 
-def create_select_rows(notion, interview_page_id, selects):
-    for s in selects:
-        notion.pages.create(
-            parent={"database_id": SELECTS_DB_ID},
-            properties={
-                "Quote": {"title": [{"text": {"content": s["quote"][:200]}}]},
-                "Interview": {"relation": [{"id": interview_page_id}]},
-                "Timecode Start": {"rich_text": [{"text": {"content": ms_to_timecode(s["start_ms"])}}]},
-                "Timecode End": {"rich_text": [{"text": {"content": ms_to_timecode(s["end_ms"])}}]},
-                "Topic Tags": {"multi_select": [{"name": t} for t in s.get("topic_tags", [])]},
-                "Emotional Weight": {"select": {"name": s["emotional_weight"]}},
-                "Length Type": {"select": {"name": s["length_type"]}},
-                "Flag": {"select": {"name": s.get("flag") or "None"}},
-                "Review Status": {"select": {"name": "Flagged"}},
-            },
-        )
+def mark_selects_in_shade(api_key, drive_id, asset_id, clip_url, selects, log, name):
+    """Add a Shade comment per usable select and attach a link to it on each
+    select (falls back to the clip link). Flagged moments are never posted."""
+    usable = [s for s in selects if not (s.get("flag") and s["flag"] != "None")]
+    try:
+        existing = shade_existing_comments(api_key, drive_id, asset_id)
+    except Exception as e:
+        log(f"  \u26a0 {name}: couldn't read existing Shade comments ({e}); skipping comments")
+        return
+    posted = 0
+    for s in usable:
+        text = comment_text(s)
+        try:
+            cid = existing.get(text.strip())
+            if not cid and text.strip() not in existing:
+                cid = shade_add_comment(api_key, drive_id, asset_id, clip_url, text, s["start_ms"], s["end_ms"])
+                posted += 1
+            s["link"] = f"{clip_url}?commentId={cid}" if cid else clip_url
+        except Exception as e:
+            log(f"  \u26a0 {name}: couldn't add a Shade comment at {ms_to_timecode(s['start_ms'])} ({e})")
+            s["link"] = clip_url
+    log(f"  \U0001f4ac {name}: {posted} new comment(s) added in Shade")
 
 
-def update_transcript_link(notion, interview_page_id, doc_url):
-    notion.pages.update(page_id=interview_page_id, properties={"Transcript Link": {"url": doc_url}})
+# --- Google Drive duplicate check ---------------------------------------------
+
+def find_existing_doc(drive, asset_id):
+    """Return the link to a doc this app already made for the clip, if any."""
+    q = (
+        f"appProperties has {{ key='shadeAssetId' and value='{asset_id}' }} "
+        f"and trashed = false"
+    )
+    resp = drive.files().list(
+        q=q, fields="files(id, webViewLink)", supportsAllDrives=True, includeItemsFromAllDrives=True, pageSize=1
+    ).execute()
+    files = resp.get("files", [])
+    return files[0]["webViewLink"] if files else None
 
 
 # --- Google Doc generation ---------------------------------------------------
@@ -290,14 +392,17 @@ def format_utterance(u, sentences_per_marker=3):
     return f"<p><b>Speaker {u['speaker']}</b><br/>{body}</p>"
 
 
-def build_doc_html(subject, selects, utterances, source_filename=None):
+def build_doc_html(subject, selects, utterances, source_filename=None, clip_url=None):
     rows = []
     for s in selects:
         if s.get("flag") and s["flag"] != "None":
             continue
         length_note = " <i>(long-form)</i>" if s.get("length_type") == "Long-form" else ""
+        tc = f"{ms_to_timecode(s['start_ms'])}\u2013{ms_to_timecode(s['end_ms'])}"
+        if s.get("link"):
+            tc = f'<a href="{s["link"]}">{tc}</a>'
         rows.append(
-            f"<tr><td>{ms_to_timecode(s['start_ms'])}\u2013{ms_to_timecode(s['end_ms'])}</td>"
+            f"<tr><td>{tc}</td>"
             f"<td>\"{s['quote']}\"{length_note}</td>"
             f"<td>{', '.join(s.get('topic_tags', []))}</td>"
             f"<td>{s['emotional_weight']}</td></tr>"
@@ -321,12 +426,16 @@ def build_doc_html(subject, selects, utterances, source_filename=None):
     transcript_rows = "".join(format_utterance(u) for u in utterances)
 
     source_line = f"<p><i>Source file: {source_filename}</i></p>" if source_filename else ""
+    clip_line = (
+        f'<p><a href="{clip_url}">\u25b6 Watch the source clip in Shade</a></p>' if clip_url else ""
+    )
+    tc_note = " Click a timecode to jump to that moment in Shade." if clip_url else ""
 
     return f"""<html><body>
 <h1>{subject}</h1>
 {source_line}
-<p><a href="{SELECTS_DB_URL}">\u2192 Browse all tagged soundbites across every interview in Notion</a></p>
-<p><i>Selects below are generated automatically. Full transcript follows for reference \u2014 scroll down.</i></p>
+{clip_line}
+<p><i>Selects below are generated automatically.{tc_note} Full transcript follows for reference \u2014 scroll down.</i></p>
 <h2>Selects</h2>
 <table border="1" cellspacing="0" cellpadding="6">
 <tr><th>Timecode</th><th>Quote</th><th>Topic</th><th>Emotional Weight</th></tr>
@@ -339,11 +448,12 @@ def build_doc_html(subject, selects, utterances, source_filename=None):
 </body></html>"""
 
 
-def create_combined_doc(drive, subject, project, html_content):
+def create_combined_doc(drive, subject, project, html_content, asset_id):
     file_metadata = {
         "name": f"{project} \u2014 {subject} (Selects + Transcript)",
         "mimeType": "application/vnd.google-apps.document",
         "parents": [COMPLETED_DOCS_FOLDER_ID],
+        "appProperties": {"shadeAssetId": asset_id},
     }
     media = MediaIoBaseUpload(io.BytesIO(html_content.encode("utf-8")), mimetype="text/html")
     doc = drive.files().create(
@@ -354,8 +464,16 @@ def create_combined_doc(drive, subject, project, html_content):
 
 # --- Orchestration ------------------------------------------------------------
 
-def process_folder(shade_api_key, drive, notion, claude, project, folder_path, recursive, log):
+def process_folder(shade_api_key, drive, claude, project, folder_path, recursive, log,
+                   workspace=None, drive_label=None):
     drive_id = drive_id_from_path(folder_path)
+    if not drive_label:
+        workspace, drive_label = shade_drive_link_info(shade_api_key, drive_id)
+    workspace = workspace or DEFAULT_WORKSPACE
+    if not drive_label:
+        log("  \u26a0 Couldn't work out this drive's Shade web link, so docs won't link to clips and "
+            "no comments will be added. Paste the folder's browser link instead of a path to fix this.")
+
     videos = shade_list_files(shade_api_key, drive_id, folder_path, recursive=recursive)
     log(f"  Found {len(videos)} video(s) in drive {drive_id}")
     results = []
@@ -363,14 +481,9 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
         asset_id = video["id"]
         name = video.get("name", asset_id)
         try:
-            existing = find_existing_interviews(notion, asset_id)
-            if any(is_complete(pg) for pg in existing):
-                log(f"  \u23ed {name}: already processed previously, skipping")
+            if find_existing_doc(drive, asset_id):
+                log(f"  \u23ed {name}: already has a doc, skipping")
                 continue
-            for pg in existing:
-                archive_incomplete(notion, pg)
-            if existing:
-                log(f"  \u267b {name}: clearing an unfinished earlier attempt")
 
             log(f"Fetching transcript for {name}...")
             utterances = shade_get_utterances(shade_api_key, drive_id, asset_id)
@@ -380,15 +493,14 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
 
             tagged = tag_utterances(claude, utterances)
             subject = tagged.get("subject_name") or name
-            selects = tagged["selects"]
+            selects = tagged.get("selects") or []
 
-            html = build_doc_html(subject, selects, utterances, source_filename=name)
+            clip_url = shade_clip_url(workspace, drive_label, asset_id)
+            if clip_url:
+                mark_selects_in_shade(shade_api_key, drive_id, asset_id, clip_url, selects, log, name)
 
-            interview_id = create_interview_page(notion, subject, project, asset_id)
-            create_select_rows(notion, interview_id, selects)
-
-            doc_url = create_combined_doc(drive, subject, project, html)
-            update_transcript_link(notion, interview_id, doc_url)
+            html = build_doc_html(subject, selects, utterances, source_filename=name, clip_url=clip_url)
+            doc_url = create_combined_doc(drive, subject, project, html, asset_id)
 
             results.append({
                 "subject": subject, "project": project, "asset_name": name,

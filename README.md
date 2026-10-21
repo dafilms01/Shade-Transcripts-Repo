@@ -2,9 +2,10 @@
 
 Pulls transcripts directly from Shade's API for a given folder (or
 folders), tags flagged moments (topic, emotional weight, off-record/legal
-flags), writes them into the Notion Post-Production databases, and
-generates one combined Google Doc (selects + full transcript) per
-interview.
+flags), adds each select as a timed comment on the clip in Shade, and
+generates one combined Google Doc per interview: a link to the clip, the
+selects table (each timecode links to its comment in Shade), and the full
+transcript.
 
 ## One-time setup
 
@@ -13,14 +14,7 @@ Generate an API key in Shade's account/workspace settings (Admin →
 API Keys, or similar). This is `shade_api_key`. Confirmed working format:
 sent as the raw key in the `Authorization` header (no `Bearer` prefix).
 
-### 2. Notion integration
-1. Go to notion.so/my-integrations → **New integration**. Name it
-   something like "Post-Production Agent". Copy the token — this is
-   `notion_token`.
-2. Open the **CBCF-50 Short Film Project** page in Notion → `···` menu →
-   **Connections** → add your new integration.
-
-### 3. Google service account (for writing the output Doc)
+### 2. Google service account (for writing the output Doc)
 1. In Google Cloud Console, enable the **Google Drive API** for a
    project.
 2. Create a **Service Account**, then create a JSON key for it — this
@@ -29,13 +23,13 @@ sent as the raw key in the `Authorization` header (no `Bearer` prefix).
    service account's email (`client_email` in the JSON key), giving it
    **Editor** access.
 
-### 4. Anthropic API key
+### 3. Anthropic API key
 Create one at console.anthropic.com if you don't already have one for
 this — this is `anthropic_api_key`.
 
-### 5. Local secrets (for testing before deploying)
+### 4. Local secrets (for testing before deploying)
 Copy `.streamlit/secrets.toml.example` to `.streamlit/secrets.toml` and
-fill in the four values above. This file is gitignored — never commit it.
+fill in the three values above. This file is gitignored — never commit it.
 
 ## Running locally
 ```
@@ -47,30 +41,28 @@ streamlit run app.py
 1. Push this repo to GitHub.
 2. On share.streamlit.io, create a new app pointing at the repo, main
    file `app.py`.
-3. In the app's **Settings → Secrets**, paste in the same four values
+3. In the app's **Settings → Secrets**, paste in the same three values
    from your local `secrets.toml`.
 4. Deploy.
 
 ## Using it
 1. Pick the project from the dropdown.
-2. Paste in the Shade folder path(s) that actually contain interview
-   footage — not B-roll or stills folders. You can grab a folder's exact
-   path from the `search/files` request in your browser's dev tools while
-   browsing that folder in Shade. One path per line if there's more than
-   one (e.g. a project with interviews split across a few folders).
+2. Paste the Shade folder link(s), copied from the browser's address bar
+   while viewing the folder, for folders that actually contain interview
+   footage (not B-roll or stills). Any drive works. One link per line.
 3. Hit **Run Intake**. Every video transcript in those folders gets
-   pulled from Shade directly (no manual export needed), tagged, written
-   to Notion, and turned into a combined doc.
+   pulled from Shade, tagged, marked with comments in Shade, and turned
+   into a combined doc. Clips that already have a doc are skipped, so a
+   folder can safely be re-run after new footage is added.
 
 The subject's name is inferred automatically from the transcript itself
 (documentary subjects almost always introduce themselves early on) —
-double check it in Notion afterward in case an unusual interview trips
-this up.
+double check it in the doc in case an unusual interview trips this up.
+
+Flagged moments (off the record, legal-sensitive) are listed separately in
+the doc and are never posted as comments in Shade.
 
 ## Known open items
-- **Shade Source Link**: not auto-populated yet in Notion — would need a
-  known mapping from workspace/project slug to build the
-  `app.shade.inc/buoyant/a/{project}/{asset_id}` URL. Can be added once
-  that mapping is confirmed, or filled in by hand for now.
-- **Folder paths** live in the UI, not hardcoded — if Shade's folder
-  structure changes, just paste the new path next time.
+- Docs made before the switch away from Notion aren't tagged with their
+  Shade clip ID, so re-running a folder processed before then makes new
+  docs for those clips.
