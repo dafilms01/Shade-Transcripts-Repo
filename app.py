@@ -1,4 +1,5 @@
-from urllib.parse import unquote
+import re
+from urllib.parse import unquote, urlparse
 
 import streamlit as st
 import anthropic
@@ -20,7 +21,8 @@ st.caption(
 with st.expander("How this works", expanded=False):
     st.markdown(
         "1. Pick the project these interviews belong to.\n"
-        "2. Paste one or more Shade folder paths — the ones that actually "
+        "2. Paste one or more Shade folder links (copied from the browser's "
+        "address bar while viewing the folder) or Shade folder paths — the ones that actually "
         "contain interview footage (not B-roll/stills). One per line. You "
         "can find a folder's path in the `search/files` request in your "
         "browser's dev tools while browsing it in Shade.\n"
@@ -49,6 +51,16 @@ def clean_path(raw):
         if decoded == path:
             break
         path = decoded
+    # Strip invisible characters (zero-width spaces etc.) picked up from copy/paste.
+    path = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", path).strip()
+    # Accept a Shade folder link from the browser address bar:
+    # https://app.shade.inc/<workspace>/f/<drive label>/<drive id>/<folder path>
+    if path.startswith(("http://", "https://")):
+        parts = [s for s in urlparse(path).path.split("/") if s]
+        if "f" in parts:
+            i = parts.index("f")
+            rest = parts[i + 2:]  # skip "f" and the drive label
+            path = "/" + "/".join(s.strip() for s in rest)
     return path
 
 

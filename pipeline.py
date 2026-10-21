@@ -87,13 +87,24 @@ def shade_headers(api_key):
     return {"Authorization": api_key, "accept": "application/json"}
 
 
-def shade_list_files(api_key, folder_path, recursive=True):
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
+
+
+def drive_id_from_path(folder_path):
+    """Shade paths start with the drive ID (/<drive_id>/...). Use it when
+    present so folders in other drives (e.g. Collab) work, and fall back to
+    the main Buoyant drive otherwise."""
+    first = folder_path.strip("/").split("/", 1)[0]
+    return first if UUID_RE.match(first) else SHADE_DRIVE_ID
+
+
+def shade_list_files(api_key, drive_id, folder_path, recursive=True):
     resp = requests.post(
         f"{SHADE_API_BASE}/search/files",
         headers={**shade_headers(api_key), "content-type": "application/json"},
         json={
             "path": folder_path,
-            "drive_id": SHADE_DRIVE_ID,
+            "drive_id": drive_id,
             "recursive": recursive,
             "query": "",
             "page": 0,
@@ -107,11 +118,11 @@ def shade_list_files(api_key, folder_path, recursive=True):
     return [f for f in files if f.get("type") == "VIDEO"]
 
 
-def shade_get_utterances(api_key, asset_id):
+def shade_get_utterances(api_key, drive_id, asset_id):
     resp = requests.get(
         f"{SHADE_API_BASE}/assets/{asset_id}/transcription/utterances",
         headers=shade_headers(api_key),
-        params={"drive_id": SHADE_DRIVE_ID},
+        params={"drive_id": drive_id},
         timeout=30,
     )
     resp.raise_for_status()
@@ -297,7 +308,9 @@ def create_combined_doc(drive, subject, project, html_content):
 # --- Orchestration ------------------------------------------------------------
 
 def process_folder(shade_api_key, drive, notion, claude, project, folder_path, recursive, log):
-    videos = shade_list_files(shade_api_key, folder_path, recursive=recursive)
+    drive_id = drive_id_from_path(folder_path)
+    videos = shade_list_files(shade_api_key, drive_id, folder_path, recursive=recursive)
+    log(f"  Found {len(videos)} video(s) in drive {drive_id}")
     results = []
     for video in videos:
         asset_id = video["id"]
@@ -309,7 +322,7 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
                 continue
 
             log(f"Fetching transcript for {name}...")
-            utterances = shade_get_utterances(shade_api_key, asset_id)
+            utterances = shade_get_utterances(shade_api_key, drive_id, asset_id)
             if not utterances:
                 log(f"  \u23ed {name}: no transcript available, skipping")
                 continue
