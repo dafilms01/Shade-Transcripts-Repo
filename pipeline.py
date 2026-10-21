@@ -126,7 +126,43 @@ def shade_get_utterances(api_key, drive_id, asset_id):
         timeout=30,
     )
     resp.raise_for_status()
-    return resp.json()
+    return normalize_utterances(resp.json())
+
+
+def normalize_utterances(data):
+    """Shade has returned transcripts both as a bare list of utterances and
+    wrapped in an object (and sometimes as a JSON string). Accept all of
+    these and hand back a plain list of utterance dicts."""
+    if isinstance(data, str):
+        data = data.strip()
+        if not data:
+            return []
+        data = json.loads(data)
+    if isinstance(data, dict):
+        for key in ("utterances", "items", "data", "results", "transcript", "transcription"):
+            if key in data:
+                return normalize_utterances(data[key])
+        lists = [v for v in data.values() if isinstance(v, list) and v and isinstance(v[0], dict)]
+        if lists:
+            return normalize_utterances(lists[0])
+        raise ValueError(f"Unrecognized transcript format from Shade (keys: {', '.join(data.keys())})")
+    if not data:
+        return []
+    out = []
+    for u in data:
+        if not isinstance(u, dict) or not str(u.get("text", "")).strip():
+            continue
+        words = u.get("words")
+        if not (isinstance(words, list) and all(isinstance(w, dict) and "text" in w and "start" in w for w in words)):
+            words = []
+        out.append({
+            "speaker": u.get("speaker", "?"),
+            "start": u.get("start", 0),
+            "end": u.get("end", u.get("start", 0)),
+            "text": u["text"],
+            "words": words,
+        })
+    return out
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -163,15 +199,26 @@ def tag_utterances(claude, utterances):
 
 # --- Notion writes -----------------------------------------------------------
 
-def find_existing_interview(notion, asset_id):
-    """Return the page_id of an existing Interview row for this Shade
-    asset, if one was already created in a previous run — otherwise None."""
+def find_existing_interviews(notion, asset_id):
+    """Return any Interview rows already created for this Shade asset."""
     resp = notion.data_sources.query(
         data_source_id=INTERVIEWS_DATA_SOURCE_ID,
         filter={"property": "Shade Asset ID", "rich_text": {"equals": asset_id}},
     )
-    results = resp.get("results", [])
-    return results[0]["id"] if results else None
+    return resp.get("results", [])
+
+
+def is_complete(page):
+    """An interview counts as done only once its Google Doc link was saved."""
+    return bool(page.get("properties", {}).get("Transcript Link", {}).get("url"))
+
+
+def archive_incomplete(notion, page):
+    """Remove a half-finished Interview row (and its Selects) left by a run
+    that crashed before the doc was made, so the clip can be redone cleanly."""
+    for rel in page.get("properties", {}).get("Selects", {}).get("relation", []):
+        notion.pages.update(page_id=rel["id"], archived=True)
+    notion.pages.update(page_id=page["id"], archived=True)
 
 
 def create_interview_page(notion, subject, project, asset_id, shade_source_link=None):
@@ -316,10 +363,14 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
         asset_id = video["id"]
         name = video.get("name", asset_id)
         try:
-            existing = find_existing_interview(notion, asset_id)
-            if existing:
+            existing = find_existing_interviews(notion, asset_id)
+            if any(is_complete(pg) for pg in existing):
                 log(f"  \u23ed {name}: already processed previously, skipping")
                 continue
+            for pg in existing:
+                archive_incomplete(notion, pg)
+            if existing:
+                log(f"  \u267b {name}: clearing an unfinished earlier attempt")
 
             log(f"Fetching transcript for {name}...")
             utterances = shade_get_utterances(shade_api_key, drive_id, asset_id)
@@ -331,10 +382,11 @@ def process_folder(shade_api_key, drive, notion, claude, project, folder_path, r
             subject = tagged.get("subject_name") or name
             selects = tagged["selects"]
 
+            html = build_doc_html(subject, selects, utterances, source_filename=name)
+
             interview_id = create_interview_page(notion, subject, project, asset_id)
             create_select_rows(notion, interview_id, selects)
 
-            html = build_doc_html(subject, selects, utterances, source_filename=name)
             doc_url = create_combined_doc(drive, subject, project, html)
             update_transcript_link(notion, interview_id, doc_url)
 
